@@ -181,6 +181,7 @@ func authenticate(data *Auth_data, b []byte) error {
 	if err != nil {
 		return err
 	}
+	request.Header.Add("Content-Type", "application/json")
 
 	client := &http.Client{}
 	resp, err := client.Do(request)
