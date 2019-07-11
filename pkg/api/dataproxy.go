@@ -112,7 +112,11 @@ func ProxyDataSourceRequest(c *middleware.Context) {
 	if keystoneAuth {
 		token, err := keystone.GetToken(c)
 		if err != nil {
-			c.JsonApiErr(500, "Failed to get keystone token", err)
+			c.SetCookie(setting.CookieUserName, "", -1, setting.AppSubUrl+"/", nil, middleware.IsSecure(c), true)
+			c.SetCookie(setting.CookieRememberName, "", -1, setting.AppSubUrl+"/", nil, middleware.IsSecure(c), true)
+			c.SetCookie(middleware.SESS_KEY_PASSWORD, "", -1, setting.AppSubUrl+"/", nil, middleware.IsSecure(c), true)
+			c.Session.Destory(c)
+			c.JsonApiErr(500, "Failed to get keystone token. Reload page!", err)
 			return
 		}
 		c.Req.Request.Header["X-Auth-Token"] = []string{token}
