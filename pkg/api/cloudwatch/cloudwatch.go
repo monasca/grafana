@@ -17,7 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/sts"
-	"github.com/grafana/grafana/pkg/log"
+	"github.com/grafana/grafana/pkg/metrics"
 	"github.com/grafana/grafana/pkg/middleware"
 	m "github.com/grafana/grafana/pkg/models"
 )
@@ -89,7 +89,7 @@ type cache struct {
 var awsCredentialCache map[string]cache = make(map[string]cache)
 var credentialCacheLock sync.RWMutex
 
-func getCredentials(dsInfo *datasourceInfo) *credentials.Credentials {
+func getCredentials(dsInfo *datasourceInfo) (*credentials.Credentials, error) {
 	cacheKey := dsInfo.Profile + ":" + dsInfo.AssumeRoleArn
 	credentialCacheLock.RLock()
 	if _, ok := awsCredentialCache[cacheKey]; ok {
@@ -97,7 +97,7 @@ func getCredentials(dsInfo *datasourceInfo) *credentials.Credentials {
 			(*awsCredentialCache[cacheKey].expiration).After(time.Now().UTC()) {
 			result := awsCredentialCache[cacheKey].credential
 			credentialCacheLock.RUnlock()
-			return result
+			return result, nil
 		}
 	}
 	credentialCacheLock.RUnlock()
@@ -114,7 +114,10 @@ func getCredentials(dsInfo *datasourceInfo) *credentials.Credentials {
 			DurationSeconds: aws.Int64(900),
 		}
 
-		stsSess := session.New()
+		stsSess, err := session.NewSession()
+		if err != nil {
+			return nil, err
+		}
 		stsCreds := credentials.NewChainCredentials(
 			[]credentials.Provider{
 				&credentials.EnvProvider{},
@@ -126,11 +129,14 @@ func getCredentials(dsInfo *datasourceInfo) *credentials.Credentials {
 			Credentials: stsCreds,
 		}
 
-		svc := sts.New(session.New(stsConfig), stsConfig)
+		sess, err := session.NewSession(stsConfig)
+		if err != nil {
+			return nil, err
+		}
+		svc := sts.New(sess, stsConfig)
 		resp, err := svc.AssumeRole(params)
 		if err != nil {
-			// ignore
-			log.Error(3, "CloudWatch: Failed to assume role", err)
+			return nil, err
 		}
 		if resp.Credentials != nil {
 			accessKeyId = *resp.Credentials.AccessKeyId
@@ -140,7 +146,10 @@ func getCredentials(dsInfo *datasourceInfo) *credentials.Credentials {
 		}
 	}
 
-	sess := session.New()
+	sess, err := session.NewSession()
+	if err != nil {
+		return nil, err
+	}
 	creds := credentials.NewChainCredentials(
 		[]credentials.Provider{
 			&credentials.StaticProvider{Value: credentials.Value{
@@ -164,20 +173,34 @@ func getCredentials(dsInfo *datasourceInfo) *credentials.Credentials {
 	}
 	credentialCacheLock.Unlock()
 
-	return creds
+	return creds, nil
 }
 
-func getAwsConfig(req *cwRequest) *aws.Config {
+func getAwsConfig(req *cwRequest) (*aws.Config, error) {
+	creds, err := getCredentials(req.GetDatasourceInfo())
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &aws.Config{
 		Region:      aws.String(req.Region),
-		Credentials: getCredentials(req.GetDatasourceInfo()),
+		Credentials: creds,
 	}
-	return cfg
+	return cfg, nil
 }
 
 func handleGetMetricStatistics(req *cwRequest, c *middleware.Context) {
-	cfg := getAwsConfig(req)
-	svc := cloudwatch.New(session.New(cfg), cfg)
+	cfg, err := getAwsConfig(req)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	sess, err := session.NewSession(cfg)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	svc := cloudwatch.New(sess, cfg)
 
 	reqParam := &struct {
 		Parameters struct {
@@ -194,14 +217,12 @@ func handleGetMetricStatistics(req *cwRequest, c *middleware.Context) {
 	json.Unmarshal(req.Body, reqParam)
 
 	params := &cloudwatch.GetMetricStatisticsInput{
-		Namespace:          aws.String(reqParam.Parameters.Namespace),
-		MetricName:         aws.String(reqParam.Parameters.MetricName),
-		Dimensions:         reqParam.Parameters.Dimensions,
-		Statistics:         reqParam.Parameters.Statistics,
-		ExtendedStatistics: reqParam.Parameters.ExtendedStatistics,
-		StartTime:          aws.Time(time.Unix(reqParam.Parameters.StartTime, 0)),
-		EndTime:            aws.Time(time.Unix(reqParam.Parameters.EndTime, 0)),
-		Period:             aws.Int64(reqParam.Parameters.Period),
+		Namespace:  aws.String(reqParam.Parameters.Namespace),
+		MetricName: aws.String(reqParam.Parameters.MetricName),
+		Dimensions: reqParam.Parameters.Dimensions,
+		StartTime:  aws.Time(time.Unix(reqParam.Parameters.StartTime, 0)),
+		EndTime:    aws.Time(time.Unix(reqParam.Parameters.EndTime, 0)),
+		Period:     aws.Int64(reqParam.Parameters.Period),
 	}
 	if len(reqParam.Parameters.Statistics) != 0 {
 		params.Statistics = reqParam.Parameters.Statistics
@@ -215,13 +236,23 @@ func handleGetMetricStatistics(req *cwRequest, c *middleware.Context) {
 		c.JsonApiErr(500, "Unable to call AWS API", err)
 		return
 	}
+	metrics.M_Aws_CloudWatch_GetMetricStatistics.Inc(1)
 
 	c.JSON(200, resp)
 }
 
 func handleListMetrics(req *cwRequest, c *middleware.Context) {
-	cfg := getAwsConfig(req)
-	svc := cloudwatch.New(session.New(cfg), cfg)
+	cfg, err := getAwsConfig(req)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	sess, err := session.NewSession(cfg)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	svc := cloudwatch.New(sess, cfg)
 
 	reqParam := &struct {
 		Parameters struct {
@@ -239,8 +270,9 @@ func handleListMetrics(req *cwRequest, c *middleware.Context) {
 	}
 
 	var resp cloudwatch.ListMetricsOutput
-	err := svc.ListMetricsPages(params,
+	err = svc.ListMetricsPages(params,
 		func(page *cloudwatch.ListMetricsOutput, lastPage bool) bool {
+			metrics.M_Aws_CloudWatch_ListMetrics.Inc(1)
 			metrics, _ := awsutil.ValuesAtPath(page, "Metrics")
 			for _, metric := range metrics {
 				resp.Metrics = append(resp.Metrics, metric.(*cloudwatch.Metric))
@@ -256,8 +288,17 @@ func handleListMetrics(req *cwRequest, c *middleware.Context) {
 }
 
 func handleDescribeAlarms(req *cwRequest, c *middleware.Context) {
-	cfg := getAwsConfig(req)
-	svc := cloudwatch.New(session.New(cfg), cfg)
+	cfg, err := getAwsConfig(req)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	sess, err := session.NewSession(cfg)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	svc := cloudwatch.New(sess, cfg)
 
 	reqParam := &struct {
 		Parameters struct {
@@ -295,8 +336,17 @@ func handleDescribeAlarms(req *cwRequest, c *middleware.Context) {
 }
 
 func handleDescribeAlarmsForMetric(req *cwRequest, c *middleware.Context) {
-	cfg := getAwsConfig(req)
-	svc := cloudwatch.New(session.New(cfg), cfg)
+	cfg, err := getAwsConfig(req)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	sess, err := session.NewSession(cfg)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	svc := cloudwatch.New(sess, cfg)
 
 	reqParam := &struct {
 		Parameters struct {
@@ -335,8 +385,17 @@ func handleDescribeAlarmsForMetric(req *cwRequest, c *middleware.Context) {
 }
 
 func handleDescribeAlarmHistory(req *cwRequest, c *middleware.Context) {
-	cfg := getAwsConfig(req)
-	svc := cloudwatch.New(session.New(cfg), cfg)
+	cfg, err := getAwsConfig(req)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	sess, err := session.NewSession(cfg)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	svc := cloudwatch.New(sess, cfg)
 
 	reqParam := &struct {
 		Parameters struct {
@@ -367,8 +426,17 @@ func handleDescribeAlarmHistory(req *cwRequest, c *middleware.Context) {
 }
 
 func handleDescribeInstances(req *cwRequest, c *middleware.Context) {
-	cfg := getAwsConfig(req)
-	svc := ec2.New(session.New(cfg), cfg)
+	cfg, err := getAwsConfig(req)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	sess, err := session.NewSession(cfg)
+	if err != nil {
+		c.JsonApiErr(500, "Unable to call AWS API", err)
+		return
+	}
+	svc := ec2.New(sess, cfg)
 
 	reqParam := &struct {
 		Parameters struct {
@@ -387,7 +455,7 @@ func handleDescribeInstances(req *cwRequest, c *middleware.Context) {
 	}
 
 	var resp ec2.DescribeInstancesOutput
-	err := svc.DescribeInstancesPages(params,
+	err = svc.DescribeInstancesPages(params,
 		func(page *ec2.DescribeInstancesOutput, lastPage bool) bool {
 			reservations, _ := awsutil.ValuesAtPath(page, "Reservations")
 			for _, reservation := range reservations {

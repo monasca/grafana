@@ -11,12 +11,11 @@ import (
 	"github.com/grafana/grafana/pkg/util"
 )
 
-func GetDataSources(c *middleware.Context) {
+func GetDataSources(c *middleware.Context) Response {
 	query := m.GetDataSourcesQuery{OrgId: c.OrgId}
 
 	if err := bus.Dispatch(&query); err != nil {
-		c.JsonApiErr(500, "Failed to query datasources", err)
-		return
+		return ApiError(500, "Failed to query datasources", err)
 	}
 
 	result := make(dtos.DataSourceList, 0)
@@ -46,7 +45,8 @@ func GetDataSources(c *middleware.Context) {
 	}
 
 	sort.Sort(result)
-	c.JSON(200, result)
+
+	return Json(200, &result)
 }
 
 func GetDataSourceById(c *middleware.Context) Response {
@@ -68,7 +68,7 @@ func GetDataSourceById(c *middleware.Context) Response {
 	return Json(200, &dtos)
 }
 
-func DeleteDataSource(c *middleware.Context) {
+func DeleteDataSourceById(c *middleware.Context) {
 	id := c.ParamsInt64(":id")
 
 	if id <= 0 {
@@ -76,7 +76,26 @@ func DeleteDataSource(c *middleware.Context) {
 		return
 	}
 
-	cmd := &m.DeleteDataSourceCommand{Id: id, OrgId: c.OrgId}
+	cmd := &m.DeleteDataSourceByIdCommand{Id: id, OrgId: c.OrgId}
+
+	err := bus.Dispatch(cmd)
+	if err != nil {
+		c.JsonApiErr(500, "Failed to delete datasource", err)
+		return
+	}
+
+	c.JsonOK("Data source deleted")
+}
+
+func DeleteDataSourceByName(c *middleware.Context) {
+	name := c.Params(":name")
+
+	if name == "" {
+		c.JsonApiErr(400, "Missing valid datasource name", nil)
+		return
+	}
+
+	cmd := &m.DeleteDataSourceByNameCommand{Name: name, OrgId: c.OrgId}
 
 	err := bus.Dispatch(cmd)
 	if err != nil {
@@ -100,7 +119,7 @@ func AddDataSource(c *middleware.Context, cmd m.AddDataSourceCommand) {
 		return
 	}
 
-	c.JSON(200, util.DynMap{"message": "Datasource added", "id": cmd.Result.Id})
+	c.JSON(200, util.DynMap{"message": "Datasource added", "id": cmd.Result.Id, "name": cmd.Result.Name})
 }
 
 func UpdateDataSource(c *middleware.Context, cmd m.UpdateDataSourceCommand) Response {
@@ -117,7 +136,7 @@ func UpdateDataSource(c *middleware.Context, cmd m.UpdateDataSourceCommand) Resp
 		return ApiError(500, "Failed to update datasource", err)
 	}
 
-	return Json(200, util.DynMap{"message": "Datasource updated"})
+	return Json(200, util.DynMap{"message": "Datasource updated", "id": cmd.Id, "name": cmd.Name})
 }
 
 func fillWithSecureJsonData(cmd *m.UpdateDataSourceCommand) error {
@@ -206,17 +225,12 @@ func convertModelToDtos(ds *m.DataSource) dtos.DataSource {
 		WithCredentials:   ds.WithCredentials,
 		IsDefault:         ds.IsDefault,
 		JsonData:          ds.JsonData,
-	}
-
-	if len(ds.SecureJsonData) > 0 {
-		dto.TLSAuth.CACertSet = len(ds.SecureJsonData["tlsCACert"]) > 0
-		dto.TLSAuth.ClientCertSet = len(ds.SecureJsonData["tlsClientCert"]) > 0
-		dto.TLSAuth.ClientKeySet = len(ds.SecureJsonData["tlsClientKey"]) > 0
+		SecureJsonFields:  map[string]bool{},
 	}
 
 	for k, v := range ds.SecureJsonData {
 		if len(v) > 0 {
-			dto.EncryptedFields = append(dto.EncryptedFields, k)
+			dto.SecureJsonFields[k] = true
 		}
 	}
 

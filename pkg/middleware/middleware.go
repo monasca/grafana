@@ -137,6 +137,7 @@ func initContextWithApiKey(ctx *Context) bool {
 }
 
 func initContextWithBasicAuth(ctx *Context) bool {
+
 	if !setting.BasicAuthEnabled {
 		return false
 	}

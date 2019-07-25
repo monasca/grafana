@@ -8,8 +8,8 @@ import config from 'app/core/config';
 export class PlaylistEditCtrl {
   filteredDashboards: any = [];
   filteredTags: any = [];
-  searchQuery: any = '';
-  loading: any = false;
+  searchQuery = '';
+  loading = false;
   playlist: any = {
     interval: '5m',
   };

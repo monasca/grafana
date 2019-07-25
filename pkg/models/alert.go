@@ -3,6 +3,8 @@ package models
 import (
 	"time"
 
+	"fmt"
+
 	"github.com/grafana/grafana/pkg/components/simplejson"
 )
 
@@ -20,9 +22,10 @@ const (
 )
 
 const (
+	NoDataSetOK       NoDataOption = "ok"
 	NoDataSetNoData   NoDataOption = "no_data"
-	NoDataSetAlerting NoDataOption = "alerting"
 	NoDataKeepState   NoDataOption = "keep_state"
+	NoDataSetAlerting NoDataOption = "alerting"
 )
 
 const (
@@ -30,12 +33,17 @@ const (
 	ExecutionErrorKeepState   ExecutionErrorOption = "keep_state"
 )
 
+var (
+	ErrCannotChangeStateOnPausedAlert error = fmt.Errorf("Cannot change state on pause alert")
+	ErrRequiresNewState               error = fmt.Errorf("update alert state requires a new state.")
+)
+
 func (s AlertStateType) IsValid() bool {
 	return s == AlertStateOK || s == AlertStateNoData || s == AlertStatePaused || s == AlertStatePending
 }
 
 func (s NoDataOption) IsValid() bool {
-	return s == NoDataSetNoData || s == NoDataSetAlerting || s == NoDataKeepState
+	return s == NoDataSetNoData || s == NoDataSetAlerting || s == NoDataKeepState || s == NoDataSetOK
 }
 
 func (s NoDataOption) ToAlertState() AlertStateType {
@@ -66,7 +74,6 @@ type Alert struct {
 	Frequency      int64
 
 	EvalData     *simplejson.Json
-	EvalDate     time.Time
 	NewStateDate time.Time
 	StateChanges int
 
@@ -131,9 +138,15 @@ type SaveAlertsCommand struct {
 }
 
 type PauseAlertCommand struct {
-	OrgId   int64
-	AlertId int64
-	Paused  bool
+	OrgId       int64
+	AlertIds    []int64
+	ResultCount int64
+	Paused      bool
+}
+
+type PauseAllAlertCommand struct {
+	ResultCount int64
+	Paused      bool
 }
 
 type SetAlertStateCommand struct {

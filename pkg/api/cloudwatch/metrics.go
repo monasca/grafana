@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awsutil"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
+	"github.com/grafana/grafana/pkg/metrics"
 	"github.com/grafana/grafana/pkg/middleware"
 	"github.com/grafana/grafana/pkg/util"
 )
@@ -81,6 +82,7 @@ func init() {
 		"AWS/RDS":              {"ActiveTransactions", "AuroraBinlogReplicaLag", "AuroraReplicaLag", "AuroraReplicaLagMaximum", "AuroraReplicaLagMinimum", "BinLogDiskUsage", "BlockedTransactions", "BufferCacheHitRatio", "CommitLatency", "CommitThroughput", "CPUCreditBalance", "CPUCreditUsage", "CPUUtilization", "DatabaseConnections", "DDLLatency", "DDLThroughput", "Deadlocks", "DiskQueueDepth", "DMLLatency", "DMLThroughput", "FailedSqlStatements", "FreeableMemory", "FreeStorageSpace", "LoginFailures", "NetworkReceiveThroughput", "NetworkTransmitThroughput", "ReadIOPS", "ReadLatency", "ReadThroughput", "ReplicaLag", "ResultSetCacheHitRatio", "SelectLatency", "SelectThroughput", "SwapUsage", "TotalConnections", "VolumeReadIOPS", "VolumeWriteIOPS", "WriteIOPS", "WriteLatency", "WriteThroughput"},
 		"AWS/Route53":          {"HealthCheckStatus", "HealthCheckPercentageHealthy", "ConnectionTime", "SSLHandshakeTime", "TimeToFirstByte"},
 		"AWS/S3":               {"BucketSizeBytes", "NumberOfObjects"},
+		"AWS/SES":              {"Bounce", "Complaint", "Delivery", "Reject", "Send"},
 		"AWS/SNS":              {"NumberOfMessagesPublished", "PublishSize", "NumberOfNotificationsDelivered", "NumberOfNotificationsFailed"},
 		"AWS/SQS":              {"NumberOfMessagesSent", "SentMessageSize", "NumberOfMessagesReceived", "NumberOfEmptyReceives", "NumberOfMessagesDeleted", "ApproximateNumberOfMessagesDelayed", "ApproximateNumberOfMessagesVisible", "ApproximateNumberOfMessagesNotVisible"},
 		"AWS/StorageGateway": {"CacheHitPercent", "CachePercentUsed", "CachePercentDirty", "CloudBytesDownloaded", "CloudDownloadLatency", "CloudBytesUploaded", "UploadBufferFree", "UploadBufferPercentUsed", "UploadBufferUsed", "QueuedWrites", "ReadBytes", "ReadTime", "TotalCacheSize", "WriteBytes", "WriteTime", "TimeSinceLastRecoveryPoint", "WorkingStorageFree", "WorkingStoragePercentUsed", "WorkingStorageUsed",
@@ -110,7 +112,7 @@ func init() {
 		"AWS/ElasticMapReduce": {"ClusterId", "JobFlowId", "JobId"},
 		"AWS/ES":               {"ClientId", "DomainName"},
 		"AWS/Events":           {"RuleName"},
-		"AWS/Firehose":         {},
+		"AWS/Firehose":         {"DeliveryStreamName"},
 		"AWS/IoT":              {"Protocol"},
 		"AWS/Kinesis":          {"StreamName", "ShardID"},
 		"AWS/KinesisAnalytics": {"Flow", "Id", "Application"},
@@ -122,6 +124,7 @@ func init() {
 		"AWS/RDS":              {"DBInstanceIdentifier", "DBClusterIdentifier", "DatabaseClass", "EngineName"},
 		"AWS/Route53":          {"HealthCheckId"},
 		"AWS/S3":               {"BucketName", "StorageType"},
+		"AWS/SES":              {},
 		"AWS/SNS":              {"Application", "Platform", "TopicName"},
 		"AWS/SQS":              {"QueueName"},
 		"AWS/StorageGateway":   {"GatewayId", "GatewayName", "VolumeId"},
@@ -139,8 +142,8 @@ func init() {
 // Please update the region list in public/app/plugins/datasource/cloudwatch/partials/config.html
 func handleGetRegions(req *cwRequest, c *middleware.Context) {
 	regions := []string{
-		"ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2", "cn-north-1",
-		"eu-central-1", "eu-west-1", "sa-east-1", "us-east-1", "us-west-1", "us-west-2", "us-gov-west-1",
+		"ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2", "ap-south-1", "ca-central-1", "cn-north-1",
+		"eu-central-1", "eu-west-1", "eu-west-2", "sa-east-1", "us-east-1", "us-east-2", "us-gov-west-1", "us-west-1", "us-west-2",
 	}
 
 	result := []interface{}{}
@@ -247,20 +250,28 @@ func handleGetDimensions(req *cwRequest, c *middleware.Context) {
 }
 
 func getAllMetrics(cwData *datasourceInfo) (cloudwatch.ListMetricsOutput, error) {
+	creds, err := getCredentials(cwData)
+	if err != nil {
+		return cloudwatch.ListMetricsOutput{}, err
+	}
 	cfg := &aws.Config{
 		Region:      aws.String(cwData.Region),
-		Credentials: getCredentials(cwData),
+		Credentials: creds,
 	}
-
-	svc := cloudwatch.New(session.New(cfg), cfg)
+	sess, err := session.NewSession(cfg)
+	if err != nil {
+		return cloudwatch.ListMetricsOutput{}, err
+	}
+	svc := cloudwatch.New(sess, cfg)
 
 	params := &cloudwatch.ListMetricsInput{
 		Namespace: aws.String(cwData.Namespace),
 	}
 
 	var resp cloudwatch.ListMetricsOutput
-	err := svc.ListMetricsPages(params,
+	err = svc.ListMetricsPages(params,
 		func(page *cloudwatch.ListMetricsOutput, lastPage bool) bool {
+			metrics.M_Aws_CloudWatch_ListMetrics.Inc(1)
 			metrics, _ := awsutil.ValuesAtPath(page, "Metrics")
 			for _, metric := range metrics {
 				resp.Metrics = append(resp.Metrics, metric.(*cloudwatch.Metric))

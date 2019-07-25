@@ -81,15 +81,7 @@ type DataSource struct {
 	WithCredentials   bool             `json:"withCredentials"`
 	IsDefault         bool             `json:"isDefault"`
 	JsonData          *simplejson.Json `json:"jsonData,omitempty"`
-	TLSAuth           TLSAuth          `json:"tlsAuth,omitempty"`
-	EncryptedFields   []string         `json:"encryptedFields"`
-}
-
-// TLSAuth is used to show if TLS certs have been uploaded already
-type TLSAuth struct {
-	CACertSet     bool `json:"tlsCACertSet"`
-	ClientCertSet bool `json:"tlsClientCertSet"`
-	ClientKeySet  bool `json:"tlsClientKeySet"`
+	SecureJsonFields  map[string]bool  `json:"secureJsonFields"`
 }
 
 type DataSourceList []DataSource
@@ -99,7 +91,7 @@ func (slice DataSourceList) Len() int {
 }
 
 func (slice DataSourceList) Less(i, j int) bool {
-	return slice[i].Name < slice[j].Name
+	return strings.ToLower(slice[i].Name) < strings.ToLower(slice[j].Name)
 }
 
 func (slice DataSourceList) Swap(i, j int) {

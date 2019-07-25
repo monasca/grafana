@@ -7,22 +7,16 @@ export class CloudWatchConfigCtrl {
   static templateUrl = 'partials/config.html';
   current: any;
 
-  accessKeyExist: any = false;
-  secretKeyExist: any = false;
+  accessKeyExist = false;
+  secretKeyExist = false;
 
   /** @ngInject */
   constructor($scope) {
     this.current.jsonData.timeField = this.current.jsonData.timeField || '@timestamp';
     this.current.jsonData.authType = this.current.jsonData.authType || 'credentials';
 
-    for (let key of this.current.encryptedFields) {
-      if (key === "accessKey") {
-        this.accessKeyExist = true;
-      }
-      if (key === "secretKey") {
-        this.secretKeyExist = true;
-      }
-    }
+    this.accessKeyExist = this.current.secureJsonFields.accessKey;
+    this.secretKeyExist = this.current.secureJsonFields.secretKey;
   }
 
   resetAccessKey() {
